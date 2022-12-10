@@ -1356,6 +1356,20 @@ Value DotOpMmaV1ConversionHelper::loadA(
     Value tensor, bool transA, const SharedMemoryObject &smemObj, Value thread,
     Location loc, ConversionPatternRewriter &rewriter) const {
 
+  // [1, 0] (isRow = True)
+  // x x x x  || x x x x
+  // x x x x  || x x x x
+  // stride = [8, 1]
+  // strideA0 = strideAk = 1
+  // strideA1 = strideAm = 8
+
+  // [0, 1] (isRow = False)
+  // x x x x  || x x x x
+  // x x x x  || x x x x
+  // stride = [1, 2]
+  // strideA0 = strideAm = 1
+  // strideA1 = strideAk = 2
+
   auto *ctx = rewriter.getContext();
   auto tensorTy = tensor.getType().cast<RankedTensorType>();
   auto sharedLayout = tensorTy.getEncoding().cast<SharedEncodingAttr>();
@@ -1364,8 +1378,8 @@ Value DotOpMmaV1ConversionHelper::loadA(
   SmallVector<unsigned> order(sharedLayout.getOrder().begin(),
                               sharedLayout.getOrder().end());
 
-  Value cSwizzleOffset = smemObj.getCSwizzleOffset(order[0]);
-  Value smemBase = smemObj.getBaseBeforeSwizzle(order[0], loc, rewriter);
+  // Value smemBase = smemObj.getBaseBeforeSwizzle(order[0], loc, rewriter);
+  Value smemBase = smemObj.base;
 
   bool isARow = order[0] != 0;
   AParam param(isARow);
@@ -1387,6 +1401,7 @@ Value DotOpMmaV1ConversionHelper::loadA(
   Value strideA0 = isARow ? strideAK : strideAM;
   Value strideA1 = isARow ? strideAM : strideAK;
 
+  smemBase = gep(ptr_ty(f16_ty), smemBase, Value(smemObj.offsets[1]));
   int strideRepM = wpt[0] * fpw[0] * 8;
   int strideRepK = 1;
 
@@ -1401,7 +1416,9 @@ Value DotOpMmaV1ConversionHelper::loadA(
   Value offA0 = isARow ? offsetAK : offsetAM;
   Value offA1 = isARow ? offsetAM : offsetAK;
   Value phaseA = urem(udiv(offA1, i32_val(perPhaseA)), i32_val(maxPhaseA));
-  offA0 = add(offA0, cSwizzleOffset);
+  // offA0 = add(offA0, smemObj.offsets[order[0]]);
+  // offA1 = add(offA1, smemObj.offsets[order[1]]);
+
   SmallVector<Value> offA(numPtrA);
   for (int i = 0; i < numPtrA; i++) {
     Value offA0I = add(offA0, i32_val(i * (isARow ? 4 : strideRepM)));
@@ -1421,6 +1438,7 @@ Value DotOpMmaV1ConversionHelper::loadA(
     ptrA[i] = gep(ptr_ty(f16_ty), smemBase, offA[i]);
 
   Type f16PtrTy = ptr_ty(f16_ty);
+
 
   auto ld = [&](decltype(has) &vals, int m, int k, Value val0, Value val1) {
     vals[{m, k}] = {val0, val1};
@@ -1451,7 +1469,10 @@ Value DotOpMmaV1ConversionHelper::loadA(
     }
   };
 
+
   unsigned numM = getNumM(shape, order);
+  llvm::outs() << "LOAD A " << numM << " " << NK << "\n";
+
   for (unsigned k = 0; k < NK; k += 4)
     for (unsigned m = 0; m < numM / 2; ++m)
       loadA(m, k);
