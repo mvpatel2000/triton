@@ -621,6 +621,46 @@ void populateSCFPatterns(TritonGPUTypeConverter &typeConverter,
                SCFConditionPattern>(typeConverter, context);
 }
 
+struct BranchPattern : public OpConversionPattern<BranchOp> {
+  using OpConversionPattern<BranchOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(BranchOp op, typename BranchOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<BranchOp>(op, op.getDest(), adaptor.getOperands());
+    return success();
+  }
+};
+
+struct CondBranchPattern : public OpConversionPattern<CondBranchOp> {
+  using OpConversionPattern<CondBranchOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CondBranchOp op, typename CondBranchOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+
+    auto newOp = rewriter.replaceOpWithNewOp<CondBranchOp>(op, adaptor.getCondition(),
+                                                  op.getTrueDest(), adaptor.getTrueDestOperands(), 
+                                                  op.getFalseDest(), adaptor.getFalseDestOperands());
+
+
+    if (failed(rewriter.convertRegionTypes(newOp->getParentRegion(),
+                                           *getTypeConverter()))) {
+      return rewriter.notifyMatchFailure(newOp, "could not convert block types");
+    }
+    return success();
+  }
+};
+
+
+void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
+                        RewritePatternSet &patterns) {
+  MLIRContext *context = patterns.getContext();
+  patterns.add<BranchPattern>(typeConverter, context);
+  patterns.add<CondBranchPattern>(typeConverter, context);
+}
+
 class ConvertTritonToTritonGPU
     : public ConvertTritonToTritonGPUBase<ConvertTritonToTritonGPU> {
 public:
@@ -644,6 +684,7 @@ public:
     // TODO: can we use
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
+    populateCFPatterns(typeConverter, patterns);
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
